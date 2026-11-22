@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "restaurant-delivery"
+version = "0.1.0"
+description = "Restaurant Ordering & Delivery Management System"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "Django>=5.0,<6.0",
+    "djangorestframework>=3.15.0",
+    "psycopg[binary]>=3.1.18",
+    "python-dotenv>=1.0.1",
+    "Pillow>=10.3.0",
+    "cloudinary>=1.40.0",
+    "django-cloudinary-storage>=0.3.0",
+    "celery>=5.4.0",
+    "redis>=5.0.4",
+    "channels>=4.1.0",
+    "channels-redis>=4.2.0",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.dev"
+python_files = ["tests.py", "test_*.py", "*_tests.py"]
