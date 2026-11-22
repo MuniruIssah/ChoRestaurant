@@ -45,6 +45,7 @@ python -m venv .venv
 
 ## Documentation
 
+- [**Developer 1 Master Presentation & Defense Guide**](DEVELOPER_1_PRESENTATION_GUIDE.md)
 - [Technical Architecture](docs/ARCHITECTURE.md)
 - [Product Requirements Document (PRD)](docs/PRD.md)
 - [PostgreSQL 16 Schema](docs/schema.sql)
