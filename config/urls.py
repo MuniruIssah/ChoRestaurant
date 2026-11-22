@@ -8,13 +8,14 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 
-from apps.core.views import api_root_view, health_check_view
+from apps.core.views import api_root_view, foundation_home_view, health_check_view
 
 admin.site.site_header = f"{settings.RESTAURANT_NAME} Administration"
 admin.site.site_title = f"{settings.RESTAURANT_NAME} Admin Portal"
 admin.site.index_title = "Restaurant Ordering & Delivery Management"
 
 urlpatterns = [
+    path("", foundation_home_view, name="home"),
     path("admin/", admin.site.urls),
     # Core health & foundation discovery endpoints
     path("api/", api_root_view, name="api-root"),
