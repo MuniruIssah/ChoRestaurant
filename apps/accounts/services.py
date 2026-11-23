@@ -62,6 +62,9 @@ def register_user(
 def authenticate_user(request, identifier: str, password: str) -> User | None:
     """
     Authenticate a user by either their username or email address.
+    If the user exists and the password matches, returns the User instance even if
+    is_active=False so callers (LoginAPIView / login form) can distinguish inactive
+    accounts (403) from bad credentials (401).
     """
     identifier = (identifier or "").strip()
     if not identifier or not password:
@@ -74,7 +77,14 @@ def authenticate_user(request, identifier: str, password: str) -> User | None:
         user_obj = User.objects.filter(username__iexact=identifier).first()
 
     username = user_obj.username if user_obj else identifier
-    return authenticate(request=request, username=username, password=password)
+    authenticated = authenticate(request=request, username=username, password=password)
+    if authenticated is not None:
+        return authenticated
+
+    if user_obj is not None and not user_obj.is_active and user_obj.check_password(password):
+        return user_obj
+
+    return None
 
 
 @transaction.atomic

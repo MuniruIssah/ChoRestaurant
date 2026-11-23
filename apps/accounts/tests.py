@@ -1,6 +1,6 @@
 """
-Unit tests for apps.accounts (Custom User model, roles, automatic profiles, delivery addresses,
-registration/login/logout/profile/rider APIs).
+Unit tests for apps.accounts covering authentication, profiles, delivery addresses,
+validation, and security/IDOR edge cases.
 Owned by Developer 1.
 """
 from decimal import Decimal
@@ -11,7 +11,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from apps.accounts.models import Address, CustomerProfile, RiderProfile, User, UserRole
-from apps.accounts.services import change_user_role, register_user, set_default_address
+from apps.accounts.services import register_user, set_default_address
 
 
 class AccountsModelAndServiceTests(TestCase):
@@ -76,7 +76,6 @@ class AccountsModelAndServiceTests(TestCase):
             city="Accra",
             state="Greater Accra",
         )
-        # First address automatically becomes default and defaults to Ghana
         self.assertTrue(addr1.is_default)
         self.assertEqual(addr1.country, "Ghana")
         user.customer_profile.refresh_from_db()
@@ -96,7 +95,6 @@ class AccountsModelAndServiceTests(TestCase):
         user.customer_profile.refresh_from_db()
         self.assertEqual(user.customer_profile.default_address_id, addr2.id)
 
-        # Switch back to addr1 via service
         set_default_address(user, addr1.id)
         addr1.refresh_from_db()
         addr2.refresh_from_db()
@@ -160,34 +158,261 @@ class AccountsAPITests(TestCase):
         self.assertTrue(addr_resp.data["is_default"])
         self.assertTrue(addr_resp.data["has_coordinates"])
 
-        # 5. Update profile & notification preferences
+        # 5. Update profile & notification preferences (and verify notify_in_app stays True)
         prof_resp = self.client.patch(
             reverse("accounts-api:profile"),
             {
                 "first_name": "Efua Nana",
                 "notify_sms": True,
+                "notify_in_app": False,
             },
             format="json",
         )
         self.assertEqual(prof_resp.status_code, 200)
         self.assertEqual(prof_resp.data["first_name"], "Efua Nana")
         self.assertTrue(prof_resp.data["customer_profile"]["notify_sms"])
+        self.assertTrue(prof_resp.data["customer_profile"]["notify_in_app"])
 
-    def test_admin_can_change_user_role_and_verify_rider(self):
+    def test_registration_duplicate_and_password_mismatch_edge_cases(self):
+        register_user(
+            username="existing_user",
+            email="existing@example.com",
+            password="StrongPassword123!",
+        )
+        # Case-insensitive duplicate email
+        dup_email_resp = self.client.post(
+            reverse("accounts-api:register"),
+            {
+                "username": "brand_new",
+                "email": "EXISTING@example.com",
+                "password": "StrongPassword123!",
+            },
+            format="json",
+        )
+        self.assertEqual(dup_email_resp.status_code, 400)
+        self.assertIn("email", dup_email_resp.data)
+
+        # Case-insensitive duplicate username
+        dup_user_resp = self.client.post(
+            reverse("accounts-api:register"),
+            {
+                "username": "EXISTING_USER",
+                "email": "unique@example.com",
+                "password": "StrongPassword123!",
+            },
+            format="json",
+        )
+        self.assertEqual(dup_user_resp.status_code, 400)
+        self.assertIn("username", dup_user_resp.data)
+
+        # Mismatched password_confirm
+        mismatch_resp = self.client.post(
+            reverse("accounts-api:register"),
+            {
+                "username": "valid_user",
+                "email": "valid@example.com",
+                "password": "StrongPassword123!",
+                "password_confirm": "DifferentPassword123!",
+            },
+            format="json",
+        )
+        self.assertEqual(mismatch_resp.status_code, 400)
+        self.assertIn("password_confirm", mismatch_resp.data)
+
+    def test_login_invalid_credentials_and_inactive_user_rejection(self):
+        user = register_user(
+            username="active_tester",
+            email="tester@example.com",
+            password="StrongPassword123!",
+        )
+        # Wrong password -> 401
+        bad_pw_resp = self.client.post(
+            reverse("accounts-api:login"),
+            {"identifier": "tester@example.com", "password": "WrongPassword999!"},
+            format="json",
+        )
+        self.assertEqual(bad_pw_resp.status_code, 401)
+
+        # Deactivated user with right password -> 403
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+        inactive_resp = self.client.post(
+            reverse("accounts-api:login"),
+            {"identifier": "tester@example.com", "password": "StrongPassword123!"},
+            format="json",
+        )
+        self.assertEqual(inactive_resp.status_code, 403)
+
+    def test_cross_user_address_idor_protection_and_default_deletion_promotion(self):
+        user_a = register_user(
+            username="user_a", email="a@example.com", password="StrongPassword123!"
+        )
+        user_b = register_user(
+            username="user_b", email="b@example.com", password="StrongPassword123!"
+        )
+        addr_a1 = Address.objects.create(
+            user=user_a, label="Home A", line1="1 Street A", city="Accra", state="Greater Accra"
+        )
+        addr_a2 = Address.objects.create(
+            user=user_a,
+            label="Work A",
+            line1="2 Street A",
+            city="Accra",
+            state="Greater Accra",
+            is_default=True,
+        )
+        addr_b = Address.objects.create(
+            user=user_b, label="Home B", line1="9 Street B", city="Accra", state="Greater Accra"
+        )
+
+        self.client.force_authenticate(user=user_a)
+
+        # User A cannot view, edit, delete, or set-default on User B's address (returns 404)
+        self.assertEqual(
+            self.client.get(reverse("accounts-api:address-detail", kwargs={"pk": addr_b.pk})).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.patch(
+                reverse("accounts-api:address-detail", kwargs={"pk": addr_b.pk}),
+                {"label": "Hacked"},
+                format="json",
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.delete(
+                reverse("accounts-api:address-detail", kwargs={"pk": addr_b.pk})
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.post(
+                reverse("accounts-api:address-set-default", kwargs={"pk": addr_b.pk})
+            ).status_code,
+            404,
+        )
+
+        # User A cannot assign User B's address as their default_address_id on profile PATCH
+        hijack_resp = self.client.patch(
+            reverse("accounts-api:profile"),
+            {"default_address_id": addr_b.pk},
+            format="json",
+        )
+        self.assertEqual(hijack_resp.status_code, 400)
+
+        # Deleting User A's current default address (addr_a2) via API promotes addr_a1 to default
+        del_resp = self.client.delete(
+            reverse("accounts-api:address-detail", kwargs={"pk": addr_a2.pk})
+        )
+        self.assertEqual(del_resp.status_code, 204)
+        addr_a1.refresh_from_db()
+        self.assertTrue(addr_a1.is_default)
+        user_a.customer_profile.refresh_from_db()
+        self.assertEqual(user_a.customer_profile.default_address_id, addr_a1.pk)
+
+    def test_address_gps_coordinate_bounds_validation(self):
+        user = register_user(
+            username="gps_user", email="gps@example.com", password="StrongPassword123!"
+        )
+        self.client.force_authenticate(user=user)
+
+        invalid_lat_resp = self.client.post(
+            reverse("accounts-api:address-list"),
+            {
+                "label": "Bad Lat",
+                "line1": "Somewhere",
+                "city": "Accra",
+                "state": "Greater Accra",
+                "latitude": "95.123456",
+                "longitude": "-0.180000",
+            },
+            format="json",
+        )
+        self.assertEqual(invalid_lat_resp.status_code, 400)
+        self.assertIn("latitude", invalid_lat_resp.data)
+
+        invalid_lng_resp = self.client.post(
+            reverse("accounts-api:address-list"),
+            {
+                "label": "Bad Lng",
+                "line1": "Somewhere",
+                "city": "Accra",
+                "state": "Greater Accra",
+                "latitude": "5.600000",
+                "longitude": "-195.000000",
+            },
+            format="json",
+        )
+        self.assertEqual(invalid_lng_resp.status_code, 400)
+        self.assertIn("longitude", invalid_lng_resp.data)
+
+    def test_password_change_and_rider_and_role_permissions_api(self):
+        customer = register_user(
+            username="regular_cust", email="reg@example.com", password="OldPassword123!"
+        )
+        rider = register_user(
+            username="active_rider",
+            email="rider_test@example.com",
+            password="RiderPassword123!",
+            role=UserRole.RIDER,
+        )
         admin = User.objects.create_superuser(
             username="boss_admin", email="boss@example.com", password="AdminPassword123!"
         )
-        target = register_user(
-            username="new_hire", email="hire@example.com", password="UserPassword123!"
-        )
-        self.client.force_authenticate(user=admin)
 
-        resp = self.client.patch(
-            reverse("accounts-api:user-role-update", kwargs={"pk": target.pk}),
+        # 1. Customer can change password with valid old_password, fails with wrong old_password
+        self.client.force_authenticate(user=customer)
+        bad_change = self.client.post(
+            reverse("accounts-api:change-password"),
+            {"old_password": "WrongOldPassword!", "new_password": "NewPassword456!"},
+            format="json",
+        )
+        self.assertEqual(bad_change.status_code, 400)
+
+        good_change = self.client.post(
+            reverse("accounts-api:change-password"),
+            {
+                "old_password": "OldPassword123!",
+                "new_password": "NewPassword456!",
+                "new_password_confirm": "NewPassword456!",
+            },
+            format="json",
+        )
+        self.assertEqual(good_change.status_code, 200)
+        customer.refresh_from_db()
+        self.assertTrue(customer.check_password("NewPassword456!"))
+
+        # 2. Customer cannot access rider-profile (403) or admin role-update endpoint (403)
+        self.assertEqual(self.client.get(reverse("accounts-api:rider-profile")).status_code, 403)
+        self.assertEqual(
+            self.client.patch(
+                reverse("accounts-api:user-role-update", kwargs={"pk": rider.pk}),
+                {"role": "ADMIN"},
+                format="json",
+            ).status_code,
+            403,
+        )
+
+        # 3. Rider can access and update their rider-profile (location_consent & plate_number)
+        self.client.force_authenticate(user=rider)
+        rider_resp = self.client.patch(
+            reverse("accounts-api:rider-profile"),
+            {"location_consent": True, "plate_number": "GW-999-26"},
+            format="json",
+        )
+        self.assertEqual(rider_resp.status_code, 200)
+        self.assertTrue(rider_resp.data["location_consent"])
+        self.assertEqual(rider_resp.data["plate_number"], "GW-999-26")
+
+        # 4. Admin can change user role and verify rider
+        self.client.force_authenticate(user=admin)
+        role_resp = self.client.patch(
+            reverse("accounts-api:user-role-update", kwargs={"pk": customer.pk}),
             {"role": "RIDER", "is_verified": True},
             format="json",
         )
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["role"], "RIDER")
-        self.assertTrue(resp.data["rider_profile"]["is_verified"])
-        self.assertTrue(RiderProfile.objects.filter(user=target, is_verified=True).exists())
+        self.assertEqual(role_resp.status_code, 200)
+        self.assertEqual(role_resp.data["role"], "RIDER")
+        self.assertTrue(role_resp.data["rider_profile"]["is_verified"])
+        self.assertTrue(RiderProfile.objects.filter(user=customer, is_verified=True).exists())

@@ -14,6 +14,7 @@ urlpatterns = [
     path("logout/", views.logout_view, name="logout"),
     path("profile/", views.profile_view, name="profile"),
     path("addresses/", views.address_list_create_view, name="addresses"),
+    path("addresses/<int:pk>/edit/", views.address_edit_view, name="address-edit"),
     path("addresses/<int:pk>/delete/", views.address_delete_view, name="address-delete"),
     path(
         "addresses/<int:pk>/set-default/",

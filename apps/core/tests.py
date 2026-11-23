@@ -1,8 +1,10 @@
 """
-Unit tests for apps.core (Shared models, permissions, RBAC mixins/decorators, maps facade, utilities).
+Unit tests for apps.core (Shared models, SoftDeleteModel, permissions, RBAC mixins/decorators,
+IsOwnerOrAdmin, maps facade, utilities, database/cloudinary URL parsers, and health check).
 Owned by Developer 1.
 """
 from decimal import Decimal
+from types import SimpleNamespace
 
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import PermissionDenied
@@ -11,7 +13,7 @@ from django.test import RequestFactory, TestCase
 from django.urls import reverse
 from django.views import View
 
-from apps.accounts.models import User, UserRole
+from apps.accounts.models import Address, User, UserRole
 from apps.core.maps import MapsFacade
 from apps.core.models import DeliveryFeeMode, RestaurantSettings
 from apps.core.permissions import (
@@ -19,22 +21,26 @@ from apps.core.permissions import (
     CustomerRequiredMixin,
     IsAdminRole,
     IsCustomer,
+    IsOwnerOrAdmin,
     IsRider,
     IsStaff,
+    ReadOnlyOrStaffAdmin,
     RiderRequiredMixin,
     StaffRequiredMixin,
     role_required,
     user_has_role,
 )
 from apps.core.utils import (
+    api_response,
     format_currency,
     generate_unique_reference,
     haversine_distance_km,
     quantize_money,
 )
+from config.settings.base import parse_cloudinary_url, parse_database_url
 
 
-class CoreUtilitiesTests(TestCase):
+class CoreUtilitiesAndConfigTests(TestCase):
     def test_quantize_money_and_format_currency(self):
         self.assertEqual(quantize_money("45.555"), Decimal("45.56"))
         self.assertEqual(quantize_money(10), Decimal("10.00"))
@@ -60,10 +66,42 @@ class CoreUtilitiesTests(TestCase):
         self.assertEqual(settings_obj.currency, "GHS")
         self.assertEqual(settings_obj.delivery_fee_mode, DeliveryFeeMode.DISTANCE)
 
-        route = MapsFacade.evaluate_destination(5.573100, -0.196900)
-        self.assertTrue(route.within_delivery_radius)
-        self.assertGreater(route.distance_km, Decimal("0.00"))
-        self.assertGreaterEqual(route.estimated_travel_minutes, 5)
+        route_near = MapsFacade.evaluate_destination(5.573100, -0.196900)
+        self.assertTrue(route_near.within_delivery_radius)
+        self.assertGreater(route_near.distance_km, Decimal("0.00"))
+        self.assertGreaterEqual(route_near.estimated_travel_minutes, 5)
+
+        # Far destination (Kumasi: ~200 km from Accra) must be outside delivery radius
+        route_far = MapsFacade.evaluate_destination(6.688500, -1.624400)
+        self.assertFalse(route_far.within_delivery_radius)
+
+    def test_parse_database_and_cloudinary_urls(self):
+        pg_cfg = parse_database_url("postgres://cho_user:secret123@db.internal:5433/cho_prod")
+        self.assertEqual(pg_cfg["ENGINE"], "django.db.backends.postgresql")
+        self.assertEqual(pg_cfg["NAME"], "cho_prod")
+        self.assertEqual(pg_cfg["USER"], "cho_user")
+        self.assertEqual(pg_cfg["PASSWORD"], "secret123")
+        self.assertEqual(pg_cfg["HOST"], "db.internal")
+        self.assertEqual(pg_cfg["PORT"], "5433")
+
+        sqlite_cfg = parse_database_url("sqlite:///test_local.sqlite3")
+        self.assertEqual(sqlite_cfg["ENGINE"], "django.db.backends.sqlite3")
+        self.assertTrue(sqlite_cfg["NAME"].endswith("test_local.sqlite3"))
+
+        with self.assertRaises(ValueError):
+            parse_database_url("mysql://user:pass@localhost/db")
+
+        cloud_cfg = parse_cloudinary_url("cloudinary://123456789:my_secret_key@cho-cloud")
+        self.assertEqual(cloud_cfg["CLOUD_NAME"], "cho-cloud")
+        self.assertEqual(cloud_cfg["API_KEY"], "123456789")
+        self.assertEqual(cloud_cfg["API_SECRET"], "my_secret_key")
+
+        with self.assertRaises(ValueError):
+            parse_cloudinary_url("http://invalid-scheme")
+
+    def test_api_response_helper(self):
+        resp = api_response(data={"item": 1}, message="Created", status_code=201)
+        self.assertEqual(resp.status_code, 201)
 
 
 class CorePermissionsTests(TestCase):
@@ -71,6 +109,9 @@ class CorePermissionsTests(TestCase):
         self.factory = RequestFactory()
         self.customer = User.objects.create_user(
             username="cust1", email="cust1@example.com", password="Password123!", role=UserRole.CUSTOMER
+        )
+        self.other_customer = User.objects.create_user(
+            username="cust2", email="cust2@example.com", password="Password123!", role=UserRole.CUSTOMER
         )
         self.staff = User.objects.create_user(
             username="staff1", email="staff1@example.com", password="Password123!", role=UserRole.STAFF
@@ -94,6 +135,11 @@ class CorePermissionsTests(TestCase):
         @role_required("STAFF", "ADMIN")
         def sample_staff_view(request):
             return HttpResponse("ok")
+
+        req_anon = self.factory.get("/staff-only/")
+        req_anon.user = AnonymousUser()
+        anon_resp = sample_staff_view(req_anon)
+        self.assertEqual(anon_resp.status_code, 302)
 
         req_customer = self.factory.get("/staff-only/")
         req_customer.user = self.customer
@@ -135,16 +181,23 @@ class CorePermissionsTests(TestCase):
         self.assertEqual(AdminView.as_view()(req).status_code, 200)
         self.assertEqual(StaffView.as_view()(req).status_code, 200)
 
-    def test_drf_permission_classes(self):
+    def test_drf_permission_classes_and_object_ownership(self):
         req = self.factory.get("/")
 
         req.user = self.customer
         self.assertTrue(IsCustomer().has_permission(req, None))
         self.assertFalse(IsStaff().has_permission(req, None))
+        self.assertTrue(ReadOnlyOrStaffAdmin().has_permission(req, None))
+
+        post_req = self.factory.post("/")
+        post_req.user = self.customer
+        self.assertFalse(ReadOnlyOrStaffAdmin().has_permission(post_req, None))
 
         req.user = self.staff
         self.assertTrue(IsStaff().has_permission(req, None))
         self.assertFalse(IsAdminRole().has_permission(req, None))
+        post_req.user = self.staff
+        self.assertTrue(ReadOnlyOrStaffAdmin().has_permission(post_req, None))
 
         req.user = self.rider
         self.assertTrue(IsRider().has_permission(req, None))
@@ -153,9 +206,40 @@ class CorePermissionsTests(TestCase):
         self.assertTrue(IsAdminRole().has_permission(req, None))
         self.assertTrue(IsStaff().has_permission(req, None))
 
-    def test_health_check_endpoint(self):
+        # Object-level IsOwnerOrAdmin checks (for Address / Order ownership)
+        addr = Address.objects.create(
+            user=self.customer,
+            label="Home",
+            line1="10 Ring Road",
+            city="Accra",
+            state="Greater Accra",
+        )
+        mock_order = SimpleNamespace(customer=self.customer)
+        owner_perm = IsOwnerOrAdmin()
+
+        req.user = self.customer
+        self.assertTrue(owner_perm.has_object_permission(req, None, addr))
+        self.assertTrue(owner_perm.has_object_permission(req, None, mock_order))
+
+        req.user = self.other_customer
+        self.assertFalse(owner_perm.has_object_permission(req, None, addr))
+        self.assertFalse(owner_perm.has_object_permission(req, None, mock_order))
+
+        req.user = self.admin
+        self.assertTrue(owner_perm.has_object_permission(req, None, addr))
+        self.assertTrue(owner_perm.has_object_permission(req, None, mock_order))
+
+    def test_health_check_and_home_portal_endpoints(self):
         response = self.client.get(reverse("health-check"))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["country"], "Ghana")
-        self.assertEqual(response.json()["currency"], "GHS")
-        self.assertTrue(response.json()["database_connected"])
+        data = response.json()
+        self.assertEqual(data["country"], "Ghana")
+        self.assertEqual(data["currency"], "GHS")
+        self.assertTrue(data["database_connected"])
+        self.assertIn("database_engine", data)
+        self.assertIn("redis_configured", data)
+        self.assertIn("media_storage_backend", data)
+
+        home_resp = self.client.get(reverse("home"))
+        self.assertEqual(home_resp.status_code, 200)
+        self.assertContains(home_resp, "Cho Restaurant")

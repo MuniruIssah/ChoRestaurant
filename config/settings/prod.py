@@ -24,8 +24,13 @@ DATABASES["default"]["CONN_MAX_AGE"] = int(os.environ.get("DB_CONN_MAX_AGE", "60
 # Cloudinary media storage in production
 if CLOUDINARY_URL:
     INSTALLED_APPS = [*INSTALLED_APPS, "cloudinary_storage", "cloudinary"]
-    STORAGES["default"] = {
-        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+    CLOUDINARY_STORAGE = parse_cloudinary_url(CLOUDINARY_URL)
+    DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
+    STORAGES = {
+        **STORAGES,
+        "default": {
+            "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+        },
     }
 
 # Redis Channel Layer for Django Channels in production

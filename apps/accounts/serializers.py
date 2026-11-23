@@ -59,7 +59,7 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("id", "loyalty_points", "notify_in_app", "created_at", "updated_at")
 
-    def validate_default_address(self, address):
+    def validate_default_address_id(self, address):
         request = self.context.get("request")
         if address and request and address.user_id != request.user.id:
             raise serializers.ValidationError("Default address must belong to the current user.")
@@ -203,3 +203,28 @@ class LoginSerializer(serializers.Serializer):
 class RoleUpdateSerializer(serializers.Serializer):
     role = serializers.ChoiceField(choices=UserRole.choices)
     is_verified = serializers.BooleanField(required=False)
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+    new_password_confirm = serializers.CharField(write_only=True, required=False)
+
+    def validate_old_password(self, value: str) -> str:
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.check_password(value):
+            raise serializers.ValidationError("Current password is incorrect.")
+        return value
+
+    def validate(self, attrs):
+        new_password = attrs.get("new_password")
+        new_password_confirm = attrs.get("new_password_confirm")
+        if new_password_confirm is not None and new_password != new_password_confirm:
+            raise serializers.ValidationError(
+                {"new_password_confirm": "New passwords do not match."}
+            )
+        request = self.context.get("request")
+        validate_password(new_password, user=getattr(request, "user", None))
+        return attrs
+

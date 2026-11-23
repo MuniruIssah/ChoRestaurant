@@ -17,6 +17,7 @@ from .serializers import (
     AddressSerializer,
     CustomerProfileSerializer,
     LoginSerializer,
+    PasswordChangeSerializer,
     RegisterSerializer,
     RiderProfileSerializer,
     RoleUpdateSerializer,
@@ -160,6 +161,7 @@ class AddressDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
     """
     GET / PUT / PATCH / DELETE /api/accounts/addresses/<id>/
     Manage a specific delivery address owned by the current user.
+    When the default address is deleted, promotes the next most recent address to default.
     """
 
     serializer_class = AddressSerializer
@@ -167,6 +169,34 @@ class AddressDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return Address.objects.filter(user=self.request.user)
+
+    def perform_destroy(self, instance: Address):
+        user = instance.user
+        was_default = instance.is_default
+        instance.delete()
+        if was_default:
+            next_addr = Address.objects.filter(user=user).order_by("-updated_at").first()
+            if next_addr:
+                set_default_address(user, next_addr.pk)
+            else:
+                CustomerProfile.objects.filter(user=user).update(default_address=None)
+
+
+class PasswordChangeAPIView(APIView):
+    """
+    POST /api/accounts/change-password/
+    Change the authenticated user's password after verifying old_password.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = PasswordChangeSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        request.user.set_password(serializer.validated_data["new_password"])
+        request.user.save(update_fields=["password", "updated_at"])
+        login(request, request.user)
+        return Response({"message": "Password updated successfully."}, status=status.HTTP_200_OK)
 
 
 class SetDefaultAddressAPIView(APIView):

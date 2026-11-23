@@ -269,15 +269,54 @@ def address_list_create_view(request: HttpRequest) -> HttpResponse:
 
 
 @login_required
+@require_http_methods(["GET", "POST"])
+def address_edit_view(request: HttpRequest, pk: int) -> HttpResponse:
+    address = get_object_or_404(Address, pk=pk, user=request.user)
+    form = AddressForm(request.POST or None, instance=address)
+    status_code = 200
+    if request.method == "POST":
+        if form.is_valid():
+            updated = form.save(commit=False)
+            updated.user = request.user
+            updated.save()
+            messages.success(request, "Delivery address updated.")
+            return redirect("accounts:addresses")
+        status_code = 400
+
+    csrf_token = get_token(request)
+    body = f"""
+        <h2>Edit Delivery Address ({escape(address.label)})</h2>
+        <form method="post">
+            <input type="hidden" name="csrfmiddlewaretoken" value="{csrf_token}">
+            {form.as_p()}
+            <button type="submit">Update Delivery Address</button>
+        </form>
+    """
+    return _render_or_fallback(
+        request,
+        ["customer/address_edit.html", "accounts/address_edit.html"],
+        {"form": form, "address": address},
+        {"address": AddressSerializer(address).data, "errors": form.errors}
+        if status_code == 400
+        else {"address": AddressSerializer(address).data},
+        "Edit Delivery Address",
+        body,
+        status=status_code,
+    )
+
+
+@login_required
 @require_http_methods(["POST"])
 def address_delete_view(request: HttpRequest, pk: int) -> HttpResponse:
     address = get_object_or_404(Address, pk=pk, user=request.user)
     was_default = address.is_default
     address.delete()
     if was_default:
-        next_addr = Address.objects.filter(user=request.user).first()
+        next_addr = Address.objects.filter(user=request.user).order_by("-updated_at").first()
         if next_addr:
             set_default_address(request.user, next_addr.pk)
+        else:
+            CustomerProfile.objects.filter(user=request.user).update(default_address=None)
     messages.success(request, "Delivery address removed.")
     return redirect("accounts:addresses")
 

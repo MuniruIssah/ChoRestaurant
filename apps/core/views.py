@@ -308,14 +308,38 @@ def foundation_home_view(request: HttpRequest) -> HttpResponse:
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def health_check_view(request):
-    """Health check endpoint verifying database connectivity and localization settings."""
+    """
+    Health check endpoint verifying database connectivity, Redis reachability,
+    media storage backend (Cloudinary vs local), and localization settings.
+    """
     db_ok = False
+    db_engine = settings.DATABASES.get("default", {}).get("ENGINE", "")
     try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1;")
             db_ok = True
     except Exception:
         db_ok = False
+
+    redis_url = getattr(settings, "REDIS_URL", "")
+    redis_ok = False
+    if redis_url:
+        try:
+            import redis as redis_client
+
+            client = redis_client.from_url(
+                redis_url,
+                socket_connect_timeout=0.25,
+                socket_timeout=0.25,
+            )
+            redis_ok = bool(client.ping())
+        except Exception:
+            redis_ok = False
+
+    storage_backend = (
+        getattr(settings, "STORAGES", {}).get("default", {}).get("BACKEND", "")
+    )
+    cloudinary_configured = bool(getattr(settings, "CLOUDINARY_URL", ""))
 
     return Response(
         {
@@ -325,6 +349,11 @@ def health_check_view(request):
             "currency": settings.DEFAULT_CURRENCY,
             "currency_symbol": settings.CURRENCY_SYMBOL,
             "database_connected": db_ok,
+            "database_engine": db_engine,
+            "redis_configured": bool(redis_url),
+            "redis_connected": redis_ok,
+            "cloudinary_configured": cloudinary_configured,
+            "media_storage_backend": storage_backend,
         },
         status=200 if db_ok else 503,
     )

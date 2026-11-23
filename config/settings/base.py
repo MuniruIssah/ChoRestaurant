@@ -61,6 +61,23 @@ def parse_database_url(url: str) -> dict:
     raise ValueError(f"Unsupported DATABASE_URL scheme: {scheme}")
 
 
+def parse_cloudinary_url(url: str) -> dict:
+    """
+    Parse a CLOUDINARY_URL (cloudinary://api_key:api_secret@cloud_name)
+    into a CLOUDINARY_STORAGE dictionary for django-cloudinary-storage.
+    """
+    if not url:
+        return {}
+    parsed = urlparse(url)
+    if parsed.scheme.lower() != "cloudinary":
+        raise ValueError(f"Unsupported CLOUDINARY_URL scheme: {parsed.scheme}")
+    return {
+        "CLOUD_NAME": unquote(parsed.hostname or ""),
+        "API_KEY": unquote(parsed.username or ""),
+        "API_SECRET": unquote(parsed.password or ""),
+    }
+
+
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ.get(
     "DJANGO_SECRET_KEY",
@@ -199,6 +216,7 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 CLOUDINARY_URL = os.environ.get("CLOUDINARY_URL", "").strip()
+CLOUDINARY_STORAGE = parse_cloudinary_url(CLOUDINARY_URL) if CLOUDINARY_URL else {}
 
 STORAGES = {
     "default": {
@@ -208,6 +226,10 @@ STORAGES = {
         "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
     },
 }
+
+# Compatibility attributes required by django-cloudinary-storage on Django 5+
+STATICFILES_STORAGE = "django.contrib.staticfiles.storage.StaticFilesStorage"
+DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
 
 # -----------------------------------------------------------------------------
 # Django REST Framework Configuration
@@ -220,6 +242,14 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticatedOrReadOnly",
     ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.environ.get("DRF_ANON_THROTTLE_RATE", "120/min"),
+        "user": os.environ.get("DRF_USER_THROTTLE_RATE", "300/min"),
+    },
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
 }
