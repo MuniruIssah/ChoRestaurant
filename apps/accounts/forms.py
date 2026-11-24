@@ -106,6 +106,4 @@ class RiderProfileForm(forms.ModelForm):
             "plate_number",
             "is_available",
             "location_consent",
-            "current_lat",
-            "current_lng",
         )

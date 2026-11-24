@@ -394,16 +394,24 @@ class AccountsAPITests(TestCase):
             403,
         )
 
-        # 3. Rider can access and update their rider-profile (location_consent & plate_number)
+        # 3. Rider can access and update their rider-profile (location_consent & plate_number),
+        #    while GPS fields (current_lat, current_lng, last_seen) are strictly read-only on profile PATCH
         self.client.force_authenticate(user=rider)
         rider_resp = self.client.patch(
             reverse("accounts-api:rider-profile"),
-            {"location_consent": True, "plate_number": "GW-999-26"},
+            {
+                "location_consent": True,
+                "plate_number": "GW-999-26",
+                "current_lat": "5.603700",
+                "current_lng": "-0.187000",
+            },
             format="json",
         )
         self.assertEqual(rider_resp.status_code, 200)
         self.assertTrue(rider_resp.data["location_consent"])
         self.assertEqual(rider_resp.data["plate_number"], "GW-999-26")
+        self.assertIsNone(rider_resp.data["current_lat"])
+        self.assertIsNone(rider_resp.data["current_lng"])
 
         # 4. Admin can change user role and verify rider
         self.client.force_authenticate(user=admin)

@@ -105,6 +105,7 @@ class RiderProfileAdmin(admin.ModelAdmin):
         "current_lng",
         "last_seen",
     )
+    readonly_fields = ("current_lat", "current_lng", "last_seen", "created_at", "updated_at")
     list_filter = ("vehicle_type", "is_available", "is_verified", "location_consent")
     search_fields = ("user__username", "user__email", "plate_number")
     actions = ["verify_riders", "mark_available", "mark_unavailable"]
