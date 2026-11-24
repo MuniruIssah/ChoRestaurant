@@ -100,6 +100,8 @@ class RiderProfileSerializer(serializers.ModelSerializer):
             "phone",
             "full_name",
             "is_verified",
+            "current_lat",
+            "current_lng",
             "last_seen",
             "created_at",
             "updated_at",
